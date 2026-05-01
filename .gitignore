@@ -1,5 +1,8 @@
 *.iml
 .gradle
+samples/
+app/src/main/assets/*.task
+app/src/main/assets/*.tflite
 /local.properties
 /.idea/caches
 /.idea/libraries

@@ -4,20 +4,21 @@ plugins {
 
 android {
     namespace = "com.bhuvan.callback"
-    compileSdk {
-        version = release(36) {
-            minorApiLevel = 1
-        }
-    }
+    compileSdk = 35
+    ndkVersion = libs.versions.ndk.get()
 
     defaultConfig {
         applicationId = "com.bhuvan.callback"
-        minSdk = 24
-        targetSdk = 36
+        minSdk = 31
+        targetSdk = 35
         versionCode = 1
         versionName = "1.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+
+        ndk {
+            abiFilters += "arm64-v8a"
+        }
     }
 
     buildTypes {
@@ -25,13 +26,13 @@ android {
             isMinifyEnabled = false
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
-                "proguard-rules.pro"
+                "proguard-rules.pro",
             )
         }
     }
     compileOptions {
-        sourceCompatibility = JavaVersion.VERSION_11
-        targetCompatibility = JavaVersion.VERSION_11
+        sourceCompatibility = JavaVersion.VERSION_17
+        targetCompatibility = JavaVersion.VERSION_17
     }
 }
 
