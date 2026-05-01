@@ -44,6 +44,21 @@ Install on a connected device:
 ./gradlew installDebug
 ```
 
+## Prebuilt debug APK (Git LFS)
+
+A ready-to-side-load debug build may live at **`artifacts/callback-debug.apk`**. It is stored with **Git LFS** (the APK is ~250 MB, above GitHub’s **100 MB** limit for ordinary Git files). On branches that include it (e.g. **`experiment/model-benchmark-selection`**), clone with LFS enabled so you get the real file, not a pointer:
+
+```bash
+git lfs install
+git clone https://github.com/BHUVAN-RJ/Callback.git
+cd Callback
+git checkout experiment/model-benchmark-selection   # if the APK is not on your default branch
+git lfs pull
+adb install artifacts/callback-debug.apk
+```
+
+If `artifacts/callback-debug.apk` is tiny text, run `git lfs pull` (or re-clone after `git lfs install`).
+
 ## Governance
 
 - **`AGENTS.md`** — agent rules (Cursor vs Claude Code).
