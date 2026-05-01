@@ -5,4 +5,7 @@
     <color name="anchor_marker">#FF00E676</color>
     <color name="tracking_label_background">#99000000</color>
     <color name="bottom_chrome_background">#CC000000</color>
+    <color name="recall_arrow">#FFFFC107</color>
+    <color name="thumb_border">#66FFFFFF</color>
+    <color name="voice_feedback_text">#FFFFFFFF</color>
 </resources>

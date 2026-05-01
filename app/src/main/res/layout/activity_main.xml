@@ -43,6 +43,15 @@
             android:layout_height="@dimen/thumb_strip_height"
             android:contentDescription="@string/thumbnail_strip_content_description" />
 
+        <TextView
+            android:id="@+id/voice_feedback"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:padding="@dimen/voice_feedback_padding"
+            android:text="@string/voice_feedback_idle"
+            android:textColor="@color/voice_feedback_text"
+            android:textSize="@dimen/voice_feedback_text_size" />
+
         <com.google.android.material.button.MaterialButton
             android:id="@+id/button_ask"
             style="@style/Widget.Material3.Button.OutlinedButton"

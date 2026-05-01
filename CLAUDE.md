@@ -16,7 +16,7 @@ If a request appears to conflict with these, ask the human; never silently overr
 
 ## Project context
 
-Callback is a hackathon Android app (LiteRT on Snapdragon, Apr 30 – May 1 2026) that runs an on-device cascade of three ML models on a Samsung Galaxy S25 Ultra: object detector (LiteRT, NPU) → Gemma-3n-E2B VLM (LiteRT-LM, NPU/GPU) → EmbeddingGemma (LiteRT-LM, NPU), with ARCore for spatial anchors. See `SPEC.md` §2 for the cascade diagram. The repo is currently at Phase 0 (empty Android Studio skeleton just committed); next is Phase 1 (ARCore plumbing on an ARCore-supported Android 12+ test device — the Vivo V15 was considered and dropped because Android 9 is below SPEC's `minSdk = 31`).
+Callback is a hackathon Android app (LiteRT on Snapdragon, Apr 30 – May 1 2026) that runs an on-device cascade of three ML models on a Samsung Galaxy S25 Ultra: object detector (LiteRT, NPU) → Gemma-3n-E2B VLM (LiteRT-LM, NPU/GPU) → EmbeddingGemma (LiteRT-LM, NPU), with ARCore for spatial anchors. See `SPEC.md` §2 for the cascade diagram. **Current phase: Phase 1 complete** (ARCore session, GL camera preview, tap-to-anchor, overlay shell). Phase 2 is next: ML stubs + pipeline wiring on the test device.
 
 ## Role split (critical)
 
@@ -79,20 +79,42 @@ From `AGENTS.md`:
 ## Git hygiene
 
 - **Never commit unprompted.** Commits happen at phase exits, after human verification, when the human says "phase N done, commit it."
-- One commit per phase by default. Format: `phase N: <short description>` (e.g. `phase 2: ml stubs and pipeline wiring`). The current `HEAD` is `Phase 0: project skeleton`.
+- One commit per phase by default. Format: `phase N: <short description>` (e.g. `phase 2: ml stubs and pipeline wiring`). The current `HEAD` is `phase 1: ARCore session, GL preview, tap-to-anchor, overlay shell`.
 - Never `git push --force`, never rewrite published history, never use `--no-verify`.
 - Never commit model files >100 MB; use `scripts/download-models.sh` and `.gitignore` the large assets (`app/src/main/assets/*.task`, `*.tflite` if oversize).
 
-## Phase 0 → Phase 1 build prep (resolved)
+## AR layer architecture (Phase 1 implemented)
 
-The 15 ambiguities surfaced after the initial Phase 0 commit have been resolved by the human and folded into the governance docs. Remaining Claude-Code-lane build/manifest work lands at the Phase 0 → Phase 1 boundary:
+`ArGlRenderer` (implements `GLSurfaceView.Renderer`) drives the frame loop. `Session.update()` runs on the GL thread — **not** the main thread. Callbacks back to `MainActivity` go through the `ArGlRenderer.Host` interface (`onGlFrame`, `onGlDisplayGeometryChanged`, `onTapAnchor`).
 
-- **Package** is `com.bhuvan.callback` in both skeleton and SPEC §8. No rename.
-- **SDK / Java:** aligned to `SPEC.md` §9 — `compileSdk` / `targetSdk` **35**, `minSdk` **31**, Java **17** (`app/build.gradle.kts`).
-- **NDK pin (SPEC §9):** add `android.ndkVersion = "27.x"` (latest stable r27 patch) in `app/build.gradle.kts` and the version in `gradle/libs.versions.toml`.
-- **ABI filters (SPEC §9):** set `defaultConfig.ndk.abiFilters = ["arm64-v8a"]`.
-- **AndroidManifest.xml:** still missing `CAMERA` / `RECORD_AUDIO` permissions, the ARCore `<meta-data>` and `<uses-feature>` entries, `android:largeHeap="true"`, and the splash Activity entry. `INTERNET` is **not** declared (models are bundled — SPEC §9, ROADMAP phase 6). Add at the phase 1 boundary.
-- **`libs.versions.toml`:** still does not contain ARCore, LiteRT, LiteRT-LM, or CameraX coordinates — resolved during phase 1 from the cloned sample apps.
+Tap-to-anchor threading: `queueTap(x, y)` is called from the main thread touch handler, stored in an `AtomicReference<Pair<Float,Float>?>`, and consumed atomically inside `consumeTap()` on the GL thread during `onDrawFrame`.
+
+Camera background draw rule: `ArBackgroundRenderer.draw()` is called for **every frame** where `frame.timestamp != 0L`. It is **not** gated on `TrackingState.TRACKING` — gating on tracking causes visible flicker/noise when tracking flaps (ARCore augmented_image_java pattern). UV coords are recomputed via `frame.transformCoordinates2d` whenever `frame.hasDisplayGeometryChanged()`.
+
+`debug/ModelBenchmarkHarness.kt` is present in the codebase (not in SPEC §8) — a benchmarking helper added during Phase 1. Treat it as debug-only infrastructure.
+
+## Phase 2 build pre-requisites (not yet done)
+
+These Gradle coordinates are still absent from `gradle/libs.versions.toml` and must be resolved from the cloned sample apps under `samples/` before Phase 2 ML stubs can compile:
+
+- `com.google.ai.edge.litert:litert` (classical inference)
+- `com.google.ai.edge.litert:litert-gpu` (GPU delegate)
+- `com.google.ai.edge.litert.qnn:litert-qnn` (Qualcomm NPU delegate)
+- `com.google.ai.edge.litertlm:litertlm-android` (LiteRT-LM for VLM + embedding)
+- `androidx.camera:camera-camera2` and `camera-lifecycle` (CameraX, if used alongside ARCore)
+
+ktlint plugin is not yet configured — `ktlintCheck` will fail until the plugin is added to `build.gradle.kts` and `libs.versions.toml`.
+
+## Code review rules
+
+When the human runs `/review` or `/code-review` (the installed code-review plugin), apply these rules in addition to the hard constraints above. Report findings as a flat list, one finding per line, with `file:line` and a one-line reason. Verdict-first per finding (FLAG / OK / N/A); no prose between findings.
+
+- Flag missing null checks on nullable types (Kotlin `?`-typed values dereferenced without `?.`, `?:`, or a smart-cast guard).
+- Flag Context leaks — any `static`/companion-object/top-level reference holding an `Activity`, `Service`, `View`, or non-application `Context`. Application context is OK.
+- Flag network calls not wrapped in `try`/`catch` or returning a `Result`/sealed error type — including `HttpURLConnection`, `URL.openStream`, and any future networking added (note: networking libs are banned by the hard constraints above; this rule covers the platform APIs that remain).
+- Flag missing coroutine scope cancellation — `CoroutineScope` created in a class without a matching `cancel()` in `onDestroy` / `close()` / lifecycle teardown; jobs launched on a scope that outlives the owning component.
+- Flag hardcoded user-visible strings that should be in `res/values/strings.xml` (string literals passed to `setText`, `Toast.makeText`, `AlertDialog`, `contentDescription`, etc.). Log tags, exception messages, and BuildConfig keys are OK.
+- Flag Activity/Fragment lifecycle mistakes — `findViewById` after `onDestroyView`, `requireContext()`/`requireActivity()` outside the attached window, missing `super.on*()` calls, retained references to destroyed Fragments, registering listeners in `onCreate` without unregistering in `onDestroy`.
 
 ## Tone
 

@@ -1,7 +1,10 @@
 package com.bhuvan.callback
 
 import android.Manifest
+import android.content.Intent
+import android.content.pm.ApplicationInfo
 import android.content.pm.PackageManager
+import android.util.Log
 import android.opengl.GLSurfaceView
 import android.os.Build
 import android.os.Bundle
@@ -14,14 +17,20 @@ import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
+import com.bhuvan.callback.debug.ModelBenchmarkHarness
 import com.bhuvan.callback.debug.RunLogger
 import com.bhuvan.callback.ar.AnchorManager
 import com.bhuvan.callback.ar.ArGlRenderer
 import com.bhuvan.callback.ar.ArSessionWrapper
 import com.bhuvan.callback.ar.WorldToScreen
+import com.bhuvan.callback.memory.MemoryStore
 import com.bhuvan.callback.pipeline.Pipeline
+import com.bhuvan.callback.pipeline.VoiceRecallResult
 import com.bhuvan.callback.ui.OverlayView
+import com.bhuvan.callback.ui.ThumbnailStrip
 import com.bhuvan.callback.ui.TouchRoutingFrameLayout
+import com.bhuvan.callback.voice.SttController
+import com.bhuvan.callback.voice.TtsController
 import com.google.android.material.button.MaterialButton
 import com.google.ar.core.Anchor
 import com.google.ar.core.ArCoreApk
@@ -34,7 +43,7 @@ import com.google.ar.core.exceptions.UnavailableDeviceNotCompatibleException
 import com.google.ar.core.exceptions.UnavailableSdkTooOldException
 import com.google.ar.core.exceptions.UnavailableUserDeclinedInstallationException
 
-/** Hosts ARCore: GL camera preview, tap-to-place anchors, tracking label, and bottom chrome for phase 2+ voice. */
+/** Hosts ARCore, the pipeline stubs, and the phase-2 voice recall loop. */
 class MainActivity :
     AppCompatActivity(),
     ArGlRenderer.Host {
@@ -43,6 +52,8 @@ class MainActivity :
     private val anchorManager = AnchorManager()
     private val pipeline = Pipeline()
     private val arRenderer = ArGlRenderer()
+    private lateinit var sttController: SttController
+    private lateinit var ttsController: TtsController
 
     @Volatile
     private var glViewportWidth = 1
@@ -56,6 +67,8 @@ class MainActivity :
     private lateinit var glView: GLSurfaceView
     private lateinit var overlay: OverlayView
     private lateinit var trackingLabel: TextView
+    private lateinit var thumbnailStrip: ThumbnailStrip
+    private lateinit var voiceFeedback: TextView
 
     private val cameraPermissionLauncher =
         registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
@@ -64,6 +77,15 @@ class MainActivity :
             } else {
                 Toast.makeText(this, R.string.camera_permission_required, Toast.LENGTH_LONG).show()
                 finish()
+            }
+        }
+
+    private val micPermissionLauncher =
+        registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+            if (granted) {
+                beginAskFlow()
+            } else {
+                Toast.makeText(this, R.string.mic_permission_required, Toast.LENGTH_LONG).show()
             }
         }
 
@@ -76,6 +98,8 @@ class MainActivity :
         glView = findViewById(R.id.gl_surface_view)
         overlay = findViewById(R.id.overlay_view)
         trackingLabel = findViewById(R.id.tracking_label)
+        thumbnailStrip = findViewById(R.id.thumbnail_strip)
+        voiceFeedback = findViewById(R.id.voice_feedback)
         val bottomChrome = findViewById<android.view.View>(R.id.bottom_chrome)
         touchRoot.glSurfaceView = glView
         touchRoot.chromeView = bottomChrome
@@ -93,15 +117,115 @@ class MainActivity :
             true
         }
 
+        ttsController = TtsController(this)
+        ttsController.ensureLoaded()
+
+        sttController =
+            SttController(
+                activity = this,
+                onFinalText = { text -> handleSpeechResult(text) },
+                onErrorCode = { code -> handleSpeechError(code) },
+            )
+
+        pipeline.onMemoriesChanged = { mainHandler.post { refreshThumbnailStrip() } }
+        pipeline.onRecallArrow = { state -> mainHandler.post { overlay.recallArrow = state } }
+
         findViewById<MaterialButton>(R.id.button_ask).setOnClickListener {
-            // Wired in phase 2 (STT).
+            onAskButtonClicked()
         }
+
+        refreshThumbnailStrip()
+
+        maybeRunDebugModelBenchmark()
 
         when {
             ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) ==
                 PackageManager.PERMISSION_GRANTED -> startArCoreAndSession()
             else -> cameraPermissionLauncher.launch(Manifest.permission.CAMERA)
         }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        maybeRunDebugModelBenchmark()
+    }
+
+    /** Debug APK only: `adb shell am start ... --ez RUN_MODEL_BENCHMARK true` — see [ModelBenchmarkHarness]. */
+    private fun maybeRunDebugModelBenchmark() {
+        if (!intent.getBooleanExtra(ModelBenchmarkHarness.EXTRA_RUN_MODEL_BENCHMARK, false)) {
+            return
+        }
+        val debuggable = (applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE) != 0
+        if (!debuggable) {
+            Log.w(TAG_BENCH, "RUN_MODEL_BENCHMARK set but APK is not debuggable — install debug: ./gradlew installDebug")
+            Toast.makeText(this, R.string.benchmark_requires_debug_apk, Toast.LENGTH_LONG).show()
+            return
+        }
+        Log.i(TAG_BENCH, "Starting model benchmark (see full JSON below this line)")
+        Toast.makeText(this, R.string.benchmark_started_toast, Toast.LENGTH_LONG).show()
+        ModelBenchmarkHarness.runAsync(applicationContext, mainHandler) {
+            Toast.makeText(applicationContext, R.string.benchmark_finished_toast, Toast.LENGTH_LONG).show()
+        }
+    }
+
+    private fun onAskButtonClicked() {
+        voiceFeedback.text = getString(R.string.voice_feedback_listening)
+        when {
+            ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) ==
+                PackageManager.PERMISSION_GRANTED -> beginAskFlow()
+            else -> micPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+        }
+    }
+
+    private fun beginAskFlow() {
+        sttController.ensureCreated()
+        sttController.startListening()
+    }
+
+    private fun handleSpeechResult(text: String) {
+        if (text.isBlank()) {
+            voiceFeedback.text = getString(R.string.stt_error_no_match)
+            ttsController.speak(getString(R.string.stt_error_no_match))
+            return
+        }
+        voiceFeedback.text = getString(R.string.voice_feedback_heard, text)
+        val result =
+            pipeline.handleVoiceQuery(
+                rawText = text,
+                emptyStoreSpoken = getString(R.string.recall_empty_spoken),
+                foundSpoken = getString(R.string.recall_found_spoken),
+            )
+        when (result) {
+            is VoiceRecallResult.Hit -> {
+                ttsController.speak(result.spoken)
+            }
+            is VoiceRecallResult.Miss -> {
+                overlay.recallArrow = null
+                ttsController.speak(result.spoken)
+            }
+            VoiceRecallResult.EmptyQuery -> {
+                overlay.recallArrow = null
+            }
+        }
+    }
+
+    private fun handleSpeechError(code: Int) {
+        val messageRes =
+            when (code) {
+                android.speech.SpeechRecognizer.ERROR_NO_MATCH -> R.string.stt_error_no_match
+                android.speech.SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS ->
+                    R.string.stt_error_permissions
+                android.speech.SpeechRecognizer.ERROR_RECOGNIZER_BUSY -> R.string.stt_error_busy
+                else -> R.string.stt_error_generic
+            }
+        voiceFeedback.text = getString(messageRes)
+        ttsController.speak(getString(messageRes))
+    }
+
+    private fun refreshThumbnailStrip() {
+        val thumbs = MemoryStore.snapshot().map { it.thumbnail }
+        thumbnailStrip.setThumbnails(thumbs)
     }
 
     private fun startArCoreAndSession() {
@@ -167,8 +291,12 @@ class MainActivity :
     }
 
     override fun onDestroy() {
+        sttController.destroy()
+        ttsController.shutdown()
         arSessionWrapper.close()
         arRenderer.host = null
+        pipeline.onMemoriesChanged = null
+        pipeline.onRecallArrow = null
         RunLogger.stop()
         super.onDestroy()
     }
@@ -182,7 +310,7 @@ class MainActivity :
     }
 
     override fun onGlFrame(frame: Frame) {
-        pipeline.onArFrameDecorated(frame)
+        pipeline.onArFrameDecorated(frame, glViewportWidth, glViewportHeight)
         val trackingState = frame.camera.trackingState
         val labelRes = trackingLabelRes(trackingState)
         val markers =
@@ -192,6 +320,9 @@ class MainActivity :
         mainHandler.post {
             overlay.markerPositions = markers
             trackingLabel.text = getString(labelRes)
+            if (trackingState != TrackingState.TRACKING) {
+                overlay.recallArrow = null
+            }
         }
     }
 
@@ -217,5 +348,6 @@ class MainActivity :
 
     companion object {
         private const val TAG = "MainActivity"
+        private const val TAG_BENCH = "CallbackBench"
     }
 }

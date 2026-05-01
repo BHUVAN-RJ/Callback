@@ -3,6 +3,14 @@
 samples/
 app/src/main/assets/*.task
 app/src/main/assets/*.tflite
+app/src/main/assets/*.litertlm
+# Model weights / export scratch dirs
+export_assets/
+*.pt
+*.pth
+*.bin
+*.safetensors
+*.gguf
 /local.properties
 /.idea/caches
 /.idea/libraries

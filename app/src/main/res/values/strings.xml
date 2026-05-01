@@ -8,4 +8,17 @@
     <string name="arcore_install_required">Install Google Play Services for AR to continue.</string>
     <string name="arcore_device_unsupported">This device does not support ARCore.</string>
     <string name="camera_permission_required">Camera permission is required for AR.</string>
+    <string name="mic_permission_required">Microphone permission is required to ask by voice.</string>
+    <string name="voice_feedback_idle">Voice: tap Ask, then speak.</string>
+    <string name="voice_feedback_listening">Listening…</string>
+    <string name="voice_feedback_heard">Heard: %1$s</string>
+    <string name="recall_found_spoken">Okay, pointing at the most recent memory.</string>
+    <string name="recall_empty_spoken">Nothing remembered yet. Hold the view steady for a couple of seconds.</string>
+    <string name="stt_error_no_match">Did not catch that. Try again.</string>
+    <string name="stt_error_permissions">Speech recognition needs microphone permission.</string>
+    <string name="stt_error_busy">Speech recognizer is busy. Try again.</string>
+    <string name="stt_error_generic">Speech recognition failed. Try again.</string>
+    <string name="benchmark_started_toast">Model benchmark running — capture logcat tag CallbackBench.</string>
+    <string name="benchmark_finished_toast">Model benchmark finished — see CallbackBench in logcat.</string>
+    <string name="benchmark_requires_debug_apk">Model benchmark needs a debug install. Run: ./gradlew installDebug</string>
 </resources>
