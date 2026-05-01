@@ -1,3 +1,11 @@
 <resources>
     <string name="app_name">Callback</string>
+    <string name="button_ask">Ask</string>
+    <string name="thumbnail_strip_content_description">Memorized objects</string>
+    <string name="tracking_state_tracking">Tracking</string>
+    <string name="tracking_state_limited">Limited</string>
+    <string name="tracking_state_not_tracking">Not tracking</string>
+    <string name="arcore_install_required">Install Google Play Services for AR to continue.</string>
+    <string name="arcore_device_unsupported">This device does not support ARCore.</string>
+    <string name="camera_permission_required">Camera permission is required for AR.</string>
 </resources>

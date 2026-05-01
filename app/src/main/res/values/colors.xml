@@ -2,4 +2,7 @@
 <resources>
     <color name="black">#FF000000</color>
     <color name="white">#FFFFFFFF</color>
+    <color name="anchor_marker">#FF00E676</color>
+    <color name="tracking_label_background">#99000000</color>
+    <color name="bottom_chrome_background">#CC000000</color>
 </resources>
