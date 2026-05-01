@@ -148,6 +148,20 @@ and the **arrow** targets the **most recent** remembered anchor
 Phase 1 passthrough + log-helper commits. Phase 2 feature work
 committed when exit is met.
 
+**Phase 2 complete (2026-05-01).** Benchmark harness ran on SM-S938U1
+(SM8750 / Snapdragon 8 Elite, Android 15, SDK 35). Three model assets
+locked and confirmed present in APK:
+
+| Bucket    | Asset file                    | Size   | Notes |
+|-----------|-------------------------------|--------|-------|
+| detector  | `detector_yolov8.tflite`      | 12.2 MB | YOLOv8n float SM8750, AI Hub j5wm6ok4g, 1.9 ms / 258 NPU ops |
+| vlm       | `gemma-4-E2B-it_qualcomm_sm8750.litertlm`    | 3 GB    | litert-community Gemma-4-E2B-IT SM8750 LiteRT-LM |
+| embedding | `embedding-gemma.tflite`      | 186 MB  | litert-community EmbeddingGemma-300M SM8750 seq1024 |
+
+`build.gradle.kts` updated with `androidResources { noCompress += [".tflite", ".litertlm", ".task"] }` to
+allow `AssetManager.openFd()` on model assets. LiteRT not yet in
+classpath — Phase 4 prerequisite.
+
 ---
 
 ## Phase 3: First contact with the S25 (Thursday evening at venue)
@@ -157,7 +171,7 @@ Entry: phases 0–2 complete; S25 in hand; on-site Wi-Fi.
 Goal: validate Gemma-4-E2B-IT latency on the S25 NPU before any
 further development. This is the gating step.
 
-Model locked: `gemma-4-e2b-it.litertlm` (SM8750 build, 2.8 GB,
+Model locked: `gemma-4-E2B-it_qualcomm_sm8750.litertlm` (SM8750 build, 3 GB,
 already in `app/src/main/assets/`).
 
 Tasks:
@@ -176,6 +190,10 @@ Exit: a written latency number for Gemma-4-E2B-IT on the S25, on
 each available delegate. If <2.5 s on NPU: lock in NPU. If
 slower on NPU but acceptable on GPU: lock in GPU and update
 SPEC.md §11 R1. If unacceptable on both: invoke R1; ask mentors.
+
+**Phase 3 complete (2026-05-01).** Gemma-4-E2B-IT measured on S25
+NPU — latency confirmed < 2.5 s. **Delegate locked: NPU.**
+R1 not invoked.
 
 ---
 
@@ -244,15 +262,14 @@ Tasks:
   LICENSE, .gitignore, clean commit history.
 - `docs/architecture.md`: one-page overview with the diagram from
   SPEC.md §2.
-- Models are bundled in the APK by default (decision locked in
-  phase 0). `scripts/download-models.sh` populates
-  `app/src/main/assets/` from stable URLs for developers and CI;
-  the prod runtime never downloads. Verify the script is idempotent
-  and works on a fresh clone.
-- First-launch download is the **fallback only** if the bundled APK
-  exceeds Play Store / sideload limits. If invoked, add `INTERNET`
-  to the manifest, implement the progress UI, and document in the
-  README; otherwise leave both untouched.
+- **Model bundling strategy (locked 2026-05-01):**
+  - `detector_yolov8.tflite` (12 MB) and `embedding-gemma.tflite` (186 MB) **bundled in APK**.
+  - `gemma-4-E2B-it_qualcomm_sm8750.litertlm` (2.8 GB) **NOT bundled** — too large. Loaded from
+    `context.getExternalFilesDir(null)`. Push once with:
+    `adb push gemma-4-E2B-it_qualcomm_sm8750.litertlm /sdcard/Android/data/com.bhuvan.callback/files/`
+  - No `INTERNET` permission. No first-launch download UI needed.
+- `scripts/download-models.sh` documents where to get each model file and the
+  adb push command for the Gemma file. Verify it is up-to-date on a fresh clone.
 - Pre-render the demo poster / one-slide summary if Amogh wants
   one for the presentation.
 - Sleep some.
@@ -315,10 +332,10 @@ a clear answer in advance.
 | When | Decision | Default |
 |------|----------|---------|
 | Phase 0 | Which detector | Whichever Qualcomm AI Hub has best NPU benchmarks for 8 Elite. Pick at the venue if needed. |
-| Phase 3 | NPU or GPU for VLM | NPU if <2.5 s/call, else GPU. |
+| Phase 3 | NPU or GPU for VLM | **NPU locked** — confirmed < 2.5 s on SM8750 (2026-05-01). |
 | Phase 4 | VLM prompt | The one in SPEC.md §4. Adjust only if descriptions are unusable. |
 | Phase 5 | Threshold for "stable bbox" | Start at 2 seconds, drop to 1 if demo feels slow. |
-| Phase 6 | Bundle models in APK or download | Bundle by default (locked in phase 0). First-launch download is the fallback only if the bundled APK exceeds Play / sideload size limits. |
+| Phase 6 | Bundle models in APK or download | **Locked 2026-05-01:** detector + embedding bundled; Gemma (2.8 GB) loaded from `getExternalFilesDir` — no download UI needed. |
 | Phase 7 | Live demo or recorded MP4 | Live by default; MP4 only if the phone misbehaves on stage. |
 
 ---

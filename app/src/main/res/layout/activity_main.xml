@@ -27,6 +27,26 @@
         android:text="@string/tracking_state_not_tracking"
         android:textColor="@color/white" />
 
+    <FrameLayout
+        android:id="@+id/model_loading_overlay"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:background="@color/model_loading_scrim"
+        android:clickable="true"
+        android:focusable="true"
+        android:visibility="visible">
+
+        <TextView
+            android:id="@+id/model_loading_text"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_gravity="center"
+            android:padding="@dimen/model_loading_padding"
+            android:text="@string/model_loading_message"
+            android:textColor="@color/white"
+            android:textSize="@dimen/model_loading_text_size" />
+    </FrameLayout>
+
     <LinearLayout
         android:id="@+id/bottom_chrome"
         android:layout_width="match_parent"

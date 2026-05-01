@@ -8,4 +8,5 @@
     <color name="recall_arrow">#FFFFC107</color>
     <color name="thumb_border">#66FFFFFF</color>
     <color name="voice_feedback_text">#FFFFFFFF</color>
+    <color name="model_loading_scrim">#CC000000</color>
 </resources>

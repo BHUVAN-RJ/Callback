@@ -4,26 +4,30 @@ import android.Manifest
 import android.content.Intent
 import android.content.pm.ApplicationInfo
 import android.content.pm.PackageManager
-import android.util.Log
 import android.opengl.GLSurfaceView
 import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.util.Log
 import android.view.MotionEvent
 import android.view.Surface
+import android.view.View
 import android.widget.TextView
 import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
-import com.bhuvan.callback.debug.ModelBenchmarkHarness
-import com.bhuvan.callback.debug.RunLogger
+import androidx.lifecycle.lifecycleScope
 import com.bhuvan.callback.ar.AnchorManager
 import com.bhuvan.callback.ar.ArGlRenderer
 import com.bhuvan.callback.ar.ArSessionWrapper
 import com.bhuvan.callback.ar.WorldToScreen
+import com.bhuvan.callback.debug.ModelBenchmarkHarness
+import com.bhuvan.callback.debug.RunLogger
 import com.bhuvan.callback.memory.MemoryStore
+import com.bhuvan.callback.ml.MlBundle
+import com.bhuvan.callback.ml.ModelLoader
 import com.bhuvan.callback.pipeline.Pipeline
 import com.bhuvan.callback.pipeline.VoiceRecallResult
 import com.bhuvan.callback.ui.OverlayView
@@ -42,16 +46,22 @@ import com.google.ar.core.exceptions.UnavailableArcoreNotInstalledException
 import com.google.ar.core.exceptions.UnavailableDeviceNotCompatibleException
 import com.google.ar.core.exceptions.UnavailableSdkTooOldException
 import com.google.ar.core.exceptions.UnavailableUserDeclinedInstallationException
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
-/** Hosts ARCore, the pipeline stubs, and the phase-2 voice recall loop. */
+/** Hosts ARCore, LiteRT / LiteRT-LM inference, and the voice recall loop. */
 class MainActivity :
     AppCompatActivity(),
     ArGlRenderer.Host {
     private val mainHandler = Handler(Looper.getMainLooper())
     private val arSessionWrapper = ArSessionWrapper(this)
     private val anchorManager = AnchorManager()
-    private val pipeline = Pipeline()
     private val arRenderer = ArGlRenderer()
+
+    private var mlBundle: MlBundle? = null
+    private var pipeline: Pipeline? = null
+
     private lateinit var sttController: SttController
     private lateinit var ttsController: TtsController
 
@@ -69,6 +79,7 @@ class MainActivity :
     private lateinit var trackingLabel: TextView
     private lateinit var thumbnailStrip: ThumbnailStrip
     private lateinit var voiceFeedback: TextView
+    private lateinit var modelLoadingOverlay: View
 
     private val cameraPermissionLauncher =
         registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
@@ -100,6 +111,7 @@ class MainActivity :
         trackingLabel = findViewById(R.id.tracking_label)
         thumbnailStrip = findViewById(R.id.thumbnail_strip)
         voiceFeedback = findViewById(R.id.voice_feedback)
+        modelLoadingOverlay = findViewById(R.id.model_loading_overlay)
         val bottomChrome = findViewById<android.view.View>(R.id.bottom_chrome)
         touchRoot.glSurfaceView = glView
         touchRoot.chromeView = bottomChrome
@@ -127,21 +139,47 @@ class MainActivity :
                 onErrorCode = { code -> handleSpeechError(code) },
             )
 
-        pipeline.onMemoriesChanged = { mainHandler.post { refreshThumbnailStrip() } }
-        pipeline.onRecallArrow = { state -> mainHandler.post { overlay.recallArrow = state } }
-
-        findViewById<MaterialButton>(R.id.button_ask).setOnClickListener {
-            onAskButtonClicked()
+        findViewById<MaterialButton>(R.id.button_ask).apply {
+            isEnabled = false
+            setOnClickListener { onAskButtonClicked() }
         }
 
         refreshThumbnailStrip()
 
         maybeRunDebugModelBenchmark()
 
+        loadMlAsync()
+
         when {
             ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) ==
                 PackageManager.PERMISSION_GRANTED -> startArCoreAndSession()
             else -> cameraPermissionLauncher.launch(Manifest.permission.CAMERA)
+        }
+    }
+
+    private fun loadMlAsync() {
+        modelLoadingOverlay.visibility = View.VISIBLE
+        lifecycleScope.launch(Dispatchers.IO) {
+            try {
+                val bundle = ModelLoader.load(this@MainActivity)
+                withContext(Dispatchers.Main) {
+                    mlBundle = bundle
+                    val p = Pipeline(bundle)
+                    p.runOnGlThread = { runnable -> glView.queueEvent(runnable) }
+                    p.onMemoriesChanged = { mainHandler.post { refreshThumbnailStrip() } }
+                    p.onRecallArrow = { state -> mainHandler.post { overlay.recallArrow = state } }
+                    pipeline = p
+                    findViewById<MaterialButton>(R.id.button_ask).isEnabled = true
+                    modelLoadingOverlay.visibility = View.GONE
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "Model load failed", e)
+                withContext(Dispatchers.Main) {
+                    Toast.makeText(this@MainActivity, R.string.model_load_failed, Toast.LENGTH_LONG).show()
+                    modelLoadingOverlay.visibility = View.GONE
+                    finish()
+                }
+            }
         }
     }
 
@@ -190,22 +228,30 @@ class MainActivity :
             return
         }
         voiceFeedback.text = getString(R.string.voice_feedback_heard, text)
-        val result =
-            pipeline.handleVoiceQuery(
-                rawText = text,
-                emptyStoreSpoken = getString(R.string.recall_empty_spoken),
-                foundSpoken = getString(R.string.recall_found_spoken),
-            )
-        when (result) {
-            is VoiceRecallResult.Hit -> {
-                ttsController.speak(result.spoken)
-            }
-            is VoiceRecallResult.Miss -> {
-                overlay.recallArrow = null
-                ttsController.speak(result.spoken)
-            }
-            VoiceRecallResult.EmptyQuery -> {
-                overlay.recallArrow = null
+        val p = pipeline
+        if (p == null) {
+            voiceFeedback.text = getString(R.string.model_loading_message)
+            return
+        }
+        lifecycleScope.launch {
+            val result =
+                p.handleVoiceQuery(
+                    rawText = text,
+                    emptyStoreSpoken = getString(R.string.recall_empty_spoken),
+                    foundSpoken = getString(R.string.recall_found_spoken),
+                    noMatchSpoken = getString(R.string.recall_no_match_spoken),
+                )
+            when (result) {
+                is VoiceRecallResult.Hit -> {
+                    ttsController.speak(result.spoken)
+                }
+                is VoiceRecallResult.Miss -> {
+                    overlay.recallArrow = null
+                    ttsController.speak(result.spoken)
+                }
+                VoiceRecallResult.EmptyQuery -> {
+                    overlay.recallArrow = null
+                }
             }
         }
     }
@@ -275,7 +321,7 @@ class MainActivity :
         try {
             arSessionWrapper.session?.resume()
         } catch (e: Exception) {
-            android.util.Log.w(TAG, "Session resume failed", e)
+            Log.w(TAG, "Session resume failed", e)
         }
         glView.onResume()
     }
@@ -285,7 +331,7 @@ class MainActivity :
         try {
             arSessionWrapper.pause()
         } catch (e: Exception) {
-            android.util.Log.w(TAG, "Session pause failed", e)
+            Log.w(TAG, "Session pause failed", e)
         }
         super.onPause()
     }
@@ -295,8 +341,12 @@ class MainActivity :
         ttsController.shutdown()
         arSessionWrapper.close()
         arRenderer.host = null
-        pipeline.onMemoriesChanged = null
-        pipeline.onRecallArrow = null
+        pipeline?.onMemoriesChanged = null
+        pipeline?.onRecallArrow = null
+        pipeline?.dispose()
+        pipeline = null
+        mlBundle?.close()
+        mlBundle = null
         RunLogger.stop()
         super.onDestroy()
     }
@@ -310,7 +360,7 @@ class MainActivity :
     }
 
     override fun onGlFrame(frame: Frame) {
-        pipeline.onArFrameDecorated(frame, glViewportWidth, glViewportHeight)
+        pipeline?.onArFrameDecorated(frame, glViewportWidth, glViewportHeight)
         val trackingState = frame.camera.trackingState
         val labelRes = trackingLabelRes(trackingState)
         val markers =

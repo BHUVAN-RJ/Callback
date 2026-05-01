@@ -6,9 +6,10 @@ import android.graphics.Bitmap
 import android.os.Build
 import android.os.Handler
 import android.util.Log
-import com.bhuvan.callback.ml.Detector
-import com.bhuvan.callback.ml.EmbeddingService
-import com.bhuvan.callback.ml.VLMService
+import com.bhuvan.callback.ml.Detection
+import com.bhuvan.callback.ml.TRACKED_CLASSES
+import android.graphics.RectF
+import kotlin.math.sqrt
 import org.json.JSONArray
 import org.json.JSONObject
 import kotlin.math.roundToLong
@@ -27,39 +28,22 @@ object ModelBenchmarkHarness {
     const val EXTRA_RUN_MODEL_BENCHMARK: String = "RUN_MODEL_BENCHMARK"
     private const val TAG = "CallbackBench"
 
-    /** Detector `.tflite` candidates (rename downloads to match, or extend this list). */
+    /** Locked detector — YOLOv8n SM8750, compiled by Qualcomm AI Hub job j5wm6ok4g. */
     val DETECTOR_CANDIDATES: List<ModelCandidate> =
         listOf(
-            ModelCandidate("detector_spec_default", "detector.tflite", "SPEC/README canonical"),
-            ModelCandidate("yolov8_quantized", "detector_yolov8.tflite", "Qualcomm AI Hub — YOLOv8 detection INT8"),
-            ModelCandidate("mobilenetv3_ssd", "detector_mobilenetv3_ssd.tflite", "Qualcomm MobileNetV3-SSD"),
-            ModelCandidate("efficientdet_lite0", "detector_efficientdet_lite0.tflite", "Qualcomm EfficientDet-Lite0"),
+            ModelCandidate("yolov8n_sm8750", "detector_yolov8.tflite", "Qualcomm AI Hub YOLOv8n float SM8750 — 1.9ms 258/258 ops NPU"),
         )
 
-    /** LiteRT-LM VLM bundles — extensions vary by HF packaging; align filenames after download. */
+    /** Locked VLM — Gemma-4-E2B-IT SM8750 LiteRT-LM build. */
     val VLM_CANDIDATES: List<ModelCandidate> =
         listOf(
-            ModelCandidate("gemma_3n_e2b_it_spec", "gemma-3n-e2b.task", "SPEC / ROADMAP Gemma-3n-E2B-it LiteRT-LM"),
-            ModelCandidate(
-                "gemma_4_e2b_it_target",
-                "gemma-4-e2b-it.task",
-                "Your pick — rename HF LiteRT-LM artifact to match after confirming extension",
-            ),
-            ModelCandidate(
-                "gemma_4_e2b_it_alt",
-                "gemma-4-E2B-it.task",
-                "Alternate casing if you keep upstream naming",
-            ),
+            ModelCandidate("gemma4_e2b_it_sm8750", "gemma-4-e2b-it.litertlm", "litert-community/gemma-4-E2B-it-litert-lm SM8750 2.8GB"),
         )
 
+    /** Locked embedding — EmbeddingGemma-300M SM8750 seq1024. */
     val EMBEDDING_CANDIDATES: List<ModelCandidate> =
         listOf(
-            ModelCandidate("embedding_gemma_default", "embedding-gemma.task", "README canonical"),
-            ModelCandidate(
-                "embedding_gemma_hf",
-                "embeddinggemma-300m.task",
-                "If HF export uses repo-style name",
-            ),
+            ModelCandidate("embeddinggemma_300m_sm8750", "embedding-gemma.tflite", "litert-community/EmbeddingGemma-300M SM8750 seq1024 186MB"),
         )
 
     private const val STUB_WARMUP = 3
@@ -138,7 +122,11 @@ object ModelBenchmarkHarness {
             .put("model", Build.MODEL)
             .put("device", Build.DEVICE)
             .put("hardware", Build.HARDWARE)
+            .put("board", Build.BOARD)
+            .put("soc_model", Build.SOC_MODEL)
+            .put("soc_manufacturer", Build.SOC_MANUFACTURER)
             .put("sdk_int", Build.VERSION.SDK_INT)
+            .put("release", Build.VERSION.RELEASE)
 
     private fun candidatesConfigJson(): JSONObject =
         JSONObject()
@@ -152,26 +140,43 @@ object ModelBenchmarkHarness {
     private fun assetsInventoryJson(context: Context): JSONObject {
         val am = context.assets
         val top = am.list("")?.toSet().orEmpty()
-        fun exists(name: String): Boolean = top.contains(name)
+
+        fun fileDetails(name: String): JSONObject {
+            val obj = JSONObject().put("file", name)
+            if (!top.contains(name)) return obj.put("present", false)
+            return try {
+                val fd = am.openFd(name)
+                val sizeMb = String.format("%.1f", fd.length / 1_048_576.0)
+                fd.close()
+                // TFLite identifier is 4 bytes at offset 4: "TFL3"
+                // LiteRT-LM (.litertlm) is a ZIP: starts PK (0x50 0x4B)
+                val header = am.open(name).use { it.readNBytes(8) }
+                val fmt = when {
+                    header.size >= 8 &&
+                        header[4] == 0x54.toByte() && header[5] == 0x46.toByte() &&
+                        header[6] == 0x4C.toByte() && header[7] == 0x33.toByte() -> "tflite-ok"
+                    header.size >= 2 &&
+                        header[0] == 0x50.toByte() && header[1] == 0x4B.toByte() -> "zip/litertlm-ok"
+                    else -> "unknown-header:${header.take(8).joinToString("") { "%02x".format(it) }}"
+                }
+                obj.put("present", true).put("size_mb", sizeMb).put("format_check", fmt)
+            } catch (e: Exception) {
+                obj.put("present", true).put("error", e.message)
+            }
+        }
 
         val arr = JSONArray()
         val allCandidates = DETECTOR_CANDIDATES + VLM_CANDIDATES + EMBEDDING_CANDIDATES
         for (c in allCandidates.distinctBy { it.assetFile }) {
-            arr.put(
-                JSONObject()
-                    .put("id", c.id)
-                    .put("file", c.assetFile)
-                    .put("present", exists(c.assetFile))
-                    .put("bucket", c.bucketJsonKey()),
-            )
+            arr.put(fileDetails(c.assetFile).put("id", c.id).put("bucket", c.bucketJsonKey()))
         }
         return JSONObject().put("files", arr).put("asset_root_count", top.size)
     }
 
     private fun stubBaselinesJson(context: Context): JSONObject {
-        val detector = Detector()
-        val vlm = VLMService()
-        val embed = EmbeddingService()
+        val detector = BenchmarkStubDetector()
+        val vlm = BenchmarkStubVlm()
+        val embed = BenchmarkStubEmbed()
 
         val detectBmp =
             Bitmap.createBitmap(STUB_DETECT_W, STUB_DETECT_H, Bitmap.Config.ARGB_8888)
@@ -210,19 +215,19 @@ object ModelBenchmarkHarness {
         }
     }
 
-    private fun measureDetect(detector: Detector, bitmap: Bitmap): Long {
+    private fun measureDetect(detector: BenchmarkStubDetector, bitmap: Bitmap): Long {
         val t0 = System.nanoTime()
         detector.detect(bitmap)
         return ((System.nanoTime() - t0) / 1_000_000L).coerceAtLeast(0L)
     }
 
-    private fun measureDescribe(vlm: VLMService, crop: Bitmap): Long {
+    private fun measureDescribe(vlm: BenchmarkStubVlm, crop: Bitmap): Long {
         val t0 = System.nanoTime()
         vlm.describe(crop)
         return ((System.nanoTime() - t0) / 1_000_000L).coerceAtLeast(0L)
     }
 
-    private fun measureEmbed(embed: EmbeddingService): Long {
+    private fun measureEmbed(embed: BenchmarkStubEmbed): Long {
         val t0 = System.nanoTime()
         embed.embed("blue bottle on desk corner")
         return ((System.nanoTime() - t0) / 1_000_000L).coerceAtLeast(0L)
@@ -269,5 +274,43 @@ object ModelBenchmarkHarness {
                 EMBEDDING_CANDIDATES.any { it.id == id } -> "embedding"
                 else -> "unknown"
             }
+    }
+
+    /** Phase-2-style stub for harness timing only (no LiteRT). */
+    private class BenchmarkStubDetector {
+        fun detect(bitmap: Bitmap): List<Detection> {
+            val w = bitmap.width.coerceAtLeast(1)
+            val h = bitmap.height.coerceAtLeast(1)
+            val side = minOf(w, h) * 0.22f
+            val cx = w / 2f
+            val cy = h / 2f
+            val bbox = RectF(cx - side / 2f, cy - side / 2f, cx + side / 2f, cy + side / 2f)
+            val label = "bottle".takeIf { it in TRACKED_CLASSES } ?: TRACKED_CLASSES.first()
+            return listOf(Detection(classLabel = label, score = 0.95f, bbox = bbox))
+        }
+    }
+
+    private class BenchmarkStubVlm {
+        @Suppress("UNUSED_PARAMETER")
+        fun describe(crop: Bitmap): String = "stub object description"
+    }
+
+    private class BenchmarkStubEmbed {
+        fun embed(text: String): FloatArray {
+            val dim = 768
+            val v = FloatArray(dim)
+            var seed = text.hashCode().toLong()
+            if (seed == 0L) seed = 1L
+            for (i in 0 until dim) {
+                seed = seed * 6364136223846793005L + 1L
+                val u = ((seed ushr 33) and 0xffff).toInt() / 65535f
+                v[i] = u * 2f - 1f
+            }
+            var sumSq = 0f
+            for (i in v.indices) sumSq += v[i] * v[i]
+            val norm = sqrt(sumSq).coerceAtLeast(1e-6f)
+            for (i in v.indices) v[i] /= norm
+            return v
+        }
     }
 }

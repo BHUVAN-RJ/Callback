@@ -13,4 +13,6 @@
     <dimen name="thumb_padding">6dp</dimen>
     <dimen name="voice_feedback_text_size">14sp</dimen>
     <dimen name="voice_feedback_padding">8dp</dimen>
+    <dimen name="model_loading_padding">16dp</dimen>
+    <dimen name="model_loading_text_size">16sp</dimen>
 </resources>

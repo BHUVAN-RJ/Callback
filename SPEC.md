@@ -74,7 +74,7 @@ needs to.
                           |
                           v
               +---------------------------+
-              | Stage 2: Gemma-3n-E2B VLM |  NPU (or GPU fallback)
+              | Stage 2: Gemma-4-E2B-IT VLM|  NPU (or GPU fallback)
               | LiteRT-LM                 |
               | Input: cropped bbox image |
               | Output: short description |
@@ -197,7 +197,10 @@ background thread with a splash screen until ready.
 ### Stage 2: Gemma-4-E2B-IT (vision-language)
 - **Model:** Gemma-4-E2B-IT, Qualcomm SM8750 build.
 - **Source:** `litert-community/gemma-4-E2B-it-litert-lm` on HF.
-- **Asset:** `app/src/main/assets/gemma-4-e2b-it.litertlm` (2.8 GB).
+- **Asset:** **not bundled in APK** — 3 GB is too large to ship in an APK.
+  Load from `context.getExternalFilesDir(null)/gemma-4-E2B-it_qualcomm_sm8750.litertlm`.
+  Push once to device: `adb push gemma-4-E2B-it_qualcomm_sm8750.litertlm /sdcard/Android/data/com.bhuvan.callback/files/`
+  No extra Android permission needed on API 31+ (`getExternalFilesDir` is app-private external storage).
 - **Runtime:** LiteRT-LM Kotlin API.
 - **Acceleration:** NPU (SM8750-specific build); GPU is fallback per R1.
 - **Input:** cropped bbox image. Exact resolution confirmed in phase 3/4
@@ -326,9 +329,10 @@ callback/
 │   └── src/main/
 │       ├── AndroidManifest.xml
 │       ├── assets/
-│       │   ├── detector.tflite
-│       │   ├── gemma-3n-e2b.task    # or whatever LiteRT-LM expects
-│       │   └── embedding-gemma.task
+│       │   ├── detector_yolov8.tflite        # YOLOv8n SM8750, 12 MB  (bundled)
+│       │   ├── yolov8_labels.txt             # COCO-80 class names
+│       │   └── embedding-gemma.tflite        # EmbeddingGemma-300M SM8750, 186 MB  (bundled)
+│       │   # gemma-4-E2B-it_qualcomm_sm8750.litertlm NOT bundled — load from getExternalFilesDir(null)
 │       ├── java/com/bhuvan/callback/
 │       │   ├── MainActivity.kt
 │       │   ├── ar/
@@ -384,17 +388,19 @@ callback/
   in `app/build.gradle.kts`'s `defaultConfig.ndk` block from phase 0
   onward. The S25 Ultra and the early-phase test devices are all
   arm64; shipping more ABIs only inflates the APK.
-- **Permissions:** `CAMERA`, `RECORD_AUDIO`. Models are bundled in
-  the APK (see ROADMAP phase 6); `INTERNET` is **not** declared. If
-  phase 6 falls back to first-launch download, add `INTERNET` then
-  and document the change.
+- **Permissions:** `CAMERA`, `RECORD_AUDIO`. `INTERNET` is **not** declared.
+  `detector_yolov8.tflite` and `embedding-gemma.tflite` are bundled in the APK.
+  `gemma-4-E2B-it_qualcomm_sm8750.litertlm` (2.8 GB) is **not bundled** — it is read from
+  `getExternalFilesDir(null)` (app-private external storage, no extra permission on API 31+).
+  Push to device once: `adb push gemma-4-E2B-it_qualcomm_sm8750.litertlm /sdcard/Android/data/com.bhuvan.callback/files/`
 - **Dependencies (stable versions to be confirmed at build time):**
   ```
   com.google.ar:core
-  com.google.ai.edge.litert:litert            # classical
-  com.google.ai.edge.litert:litert-gpu        # GPU delegate
-  com.google.ai.edge.litert.qnn:litert-qnn    # Qualcomm NPU delegate
-  com.google.ai.edge.litertlm:litertlm-android# LLM/VLM runtime
+  com.google.ai.edge.litert:litert:2.1.4              # classical (Detector + EmbeddingService)
+  com.google.ai.edge.litert:litert-gpu:1.4.2          # GPU delegate
+  com.qualcomm.qti:qnn-litert-delegate:2.44.0         # Qualcomm NPU delegate (NOT com.google.ai.edge.litert.qnn)
+  com.google.ai.edge.litertlm:litertlm-android:0.10.2 # LiteRT-LM (VLMService / Gemma-4-E2B-IT)
+  org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3
   androidx.camera:camera-camera2
   androidx.camera:camera-lifecycle
   ```
@@ -409,7 +415,7 @@ callback/
 |-----------------|---------------|----------------------|
 | ARCore frame    | <33 ms        | 30 Hz, parallel      |
 | Detector        | <30 ms        | 10 Hz                |
-| VLM (Gemma-3n)  | <2.5 s        | 1–3 calls / minute   |
+| VLM (Gemma-4-E2B-IT) | <2.5 s   | 1–3 calls / minute   |
 | Embedding write | <100 ms       | 1 per remember       |
 | Embedding read  | <100 ms       | 1 per query          |
 | Cosine search   | <5 ms         | 1 per query, <100 entries |
@@ -425,7 +431,7 @@ on NPU for the criterion to be defensible.
 
 | ID | Risk | Mitigation | Decision point |
 |----|------|------------|----------------|
-| R1 | Gemma-3n-E2B too slow on NPU | Run on GPU instead | End of phase 3 on device |
+| R1 | Gemma-4-E2B-IT too slow on NPU | Run on GPU instead | End of phase 3 on device |
 | R2 | ARCore + LiteRT camera contention | ARCore owns session, copy frames on background thread | Phase 2 first run |
 | R3 | Hit-test fails on featureless surface | Depth-API fallback for anchor placement | Phase 4, only if observed |
 | R4 | APK > 2 GB due to bundled models | Download on first launch with progress UI | Phase 6 |

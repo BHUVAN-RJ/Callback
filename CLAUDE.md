@@ -16,7 +16,7 @@ If a request appears to conflict with these, ask the human; never silently overr
 
 ## Project context
 
-Callback is a hackathon Android app (LiteRT on Snapdragon, Apr 30 – May 1 2026) that runs an on-device cascade of three ML models on a Samsung Galaxy S25 Ultra: object detector (LiteRT, NPU) → Gemma-3n-E2B VLM (LiteRT-LM, NPU/GPU) → EmbeddingGemma (LiteRT-LM, NPU), with ARCore for spatial anchors. See `SPEC.md` §2 for the cascade diagram. **Current phase: Phase 1 complete** (ARCore session, GL camera preview, tap-to-anchor, overlay shell). Phase 2 is next: ML stubs + pipeline wiring on the test device.
+Callback is a hackathon Android app (LiteRT on Snapdragon, Apr 30 – May 1 2026) that runs an on-device cascade of three ML models on a Samsung Galaxy S25 Ultra: object detector (LiteRT, NPU) → Gemma-4-E2B-IT VLM (LiteRT-LM, NPU) → EmbeddingGemma (LiteRT-LM, NPU), with ARCore for spatial anchors. See `SPEC.md` §2 for the cascade diagram. **Current phase: Phase 3 complete** (model selection locked, Gemma-4-E2B-IT NPU latency confirmed < 2.5 s on SM8750). **Phase 4 is next:** replace each ML stub with real LiteRT / LiteRT-LM inference, one model at a time.
 
 ## Role split (critical)
 
@@ -93,17 +93,25 @@ Camera background draw rule: `ArBackgroundRenderer.draw()` is called for **every
 
 `debug/ModelBenchmarkHarness.kt` is present in the codebase (not in SPEC §8) — a benchmarking helper added during Phase 1. Treat it as debug-only infrastructure.
 
-## Phase 2 build pre-requisites (not yet done)
+## Phase 4 build pre-requisites (not yet done)
 
-These Gradle coordinates are still absent from `gradle/libs.versions.toml` and must be resolved from the cloned sample apps under `samples/` before Phase 2 ML stubs can compile:
+These Gradle coordinates are absent from `gradle/libs.versions.toml` and must be resolved from the
+cloned sample apps under `samples/` before real model inference can compile:
 
-- `com.google.ai.edge.litert:litert` (classical inference)
+- `com.google.ai.edge.litert:litert` (classical inference — detector + embedding)
 - `com.google.ai.edge.litert:litert-gpu` (GPU delegate)
 - `com.google.ai.edge.litert.qnn:litert-qnn` (Qualcomm NPU delegate)
-- `com.google.ai.edge.litertlm:litertlm-android` (LiteRT-LM for VLM + embedding)
-- `androidx.camera:camera-camera2` and `camera-lifecycle` (CameraX, if used alongside ARCore)
+- `com.google.ai.edge.litertlm:litertlm-android` (LiteRT-LM for Gemma-4-E2B-IT VLM)
 
-ktlint plugin is not yet configured — `ktlintCheck` will fail until the plugin is added to `build.gradle.kts` and `libs.versions.toml`.
+`build.gradle.kts` already has `androidResources { noCompress += [".tflite", ".litertlm", ".task"] }`
+and `packaging { jniLibs { useLegacyPackaging = true } }` (required for QNN native libs).
+
+**Gemma model is NOT in assets** — 2.8 GB cannot be bundled. `ModelLoader.kt` must load it from
+`context.getExternalFilesDir(null)/gemma-4-E2B-it_qualcomm_sm8750.litertlm`. Push to device once with:
+`adb push gemma-4-E2B-it_qualcomm_sm8750.litertlm /sdcard/Android/data/com.bhuvan.callback/files/`
+No extra Android permission needed (API 31+ app-private external storage).
+
+ktlint plugin is not yet configured — `ktlintCheck` will fail until added to `build.gradle.kts` and `libs.versions.toml`.
 
 ## Code review rules
 
