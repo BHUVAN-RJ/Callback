@@ -14,6 +14,7 @@ import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
+import com.bhuvan.callback.debug.RunLogger
 import com.bhuvan.callback.ar.AnchorManager
 import com.bhuvan.callback.ar.ArGlRenderer
 import com.bhuvan.callback.ar.ArSessionWrapper
@@ -68,6 +69,7 @@ class MainActivity :
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        RunLogger.start(applicationContext)
         setContentView(R.layout.activity_main)
 
         touchRoot = findViewById(R.id.touch_root)
@@ -167,6 +169,7 @@ class MainActivity :
     override fun onDestroy() {
         arSessionWrapper.close()
         arRenderer.host = null
+        RunLogger.stop()
         super.onDestroy()
     }
 

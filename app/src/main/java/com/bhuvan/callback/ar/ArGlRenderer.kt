@@ -3,9 +3,9 @@ package com.bhuvan.callback.ar
 import android.opengl.GLES20
 import android.opengl.GLSurfaceView
 import android.util.Log
+import com.bhuvan.callback.debug.RunLogger
 import com.google.ar.core.Frame
 import com.google.ar.core.Session
-import com.google.ar.core.TrackingState
 import com.google.ar.core.exceptions.CameraNotAvailableException
 import java.util.concurrent.atomic.AtomicReference
 import javax.microedition.khronos.egl.EGLConfig
@@ -59,16 +59,17 @@ class ArGlRenderer : GLSurfaceView.Renderer {
             GLES20.glViewport(0, 0, viewportWidth, viewportHeight)
             GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT or GLES20.GL_DEPTH_BUFFER_BIT)
 
-            if (frame.camera.trackingState == TrackingState.TRACKING) {
-                backgroundRenderer.draw(frame)
-            }
+            // Camera passthrough must be drawn whenever the frame is valid — not only while
+            // tracking. Gating on TRACKING causes flicker/noise when tracking flaps; 3D hits still
+            // require TRACKING inside handlers if needed (see ARCore augmented_image_java sample).
+            backgroundRenderer.draw(frame)
 
             consumeTap(frame, session)
             host?.onGlFrame(frame)
         } catch (e: CameraNotAvailableException) {
-            Log.e(TAG, "Camera not available during draw", e)
+            RunLogger.e(TAG, "Camera not available during draw", e)
         } catch (e: Throwable) {
-            Log.e(TAG, "Frame update failed", e)
+            RunLogger.e(TAG, "Frame update failed", e)
         }
     }
 

@@ -2,6 +2,7 @@ package com.bhuvan.callback.ar
 
 import android.opengl.GLES11Ext
 import android.opengl.GLES20
+import android.util.Log
 import com.google.ar.core.Coordinates2d
 import com.google.ar.core.Frame
 import java.nio.ByteBuffer
@@ -31,6 +32,8 @@ class ArBackgroundRenderer {
 
     private lateinit var quadCoordsBuffer: FloatBuffer
     private lateinit var quadTexCoordsBuffer: FloatBuffer
+
+    private var texCoordsReady = false
 
     /** GL texture id passed to [com.google.ar.core.Session.setCameraTextureName]. */
     val cameraTextureId: Int
@@ -89,12 +92,31 @@ class ArBackgroundRenderer {
                 }
                 """.trimIndent(),
             )
+        if (vertexShader == 0 || fragmentShader == 0) {
+            if (vertexShader != 0) {
+                GLES20.glDeleteShader(vertexShader)
+            }
+            if (fragmentShader != 0) {
+                GLES20.glDeleteShader(fragmentShader)
+            }
+            Log.e(TAG, "Shader stage failed; background program not created.")
+            return
+        }
         program = GLES20.glCreateProgram()
         GLES20.glAttachShader(program, vertexShader)
         GLES20.glAttachShader(program, fragmentShader)
         GLES20.glLinkProgram(program)
         GLES20.glDeleteShader(vertexShader)
         GLES20.glDeleteShader(fragmentShader)
+
+        val linkStatus = IntArray(1)
+        GLES20.glGetProgramiv(program, GLES20.GL_LINK_STATUS, linkStatus, 0)
+        if (linkStatus[0] == 0) {
+            Log.e(TAG, "Could not link program: ${GLES20.glGetProgramInfoLog(program)}")
+            GLES20.glDeleteProgram(program)
+            program = 0
+            return
+        }
 
         positionAttrib = GLES20.glGetAttribLocation(program, "a_Position")
         texCoordAttrib = GLES20.glGetAttribLocation(program, "a_TexCoord")
@@ -119,7 +141,13 @@ class ArBackgroundRenderer {
     fun draw(frame: Frame) {
         if (textureId == -1 || program == 0) return
 
-        if (frame.hasDisplayGeometryChanged()) {
+        // Avoid sampling a stale external texture before the first camera frame is ready (ARCore
+        // hello_ar_java BackgroundRenderer).
+        if (frame.timestamp == 0L) {
+            return
+        }
+
+        if (frame.hasDisplayGeometryChanged() || !texCoordsReady) {
             frame.transformCoordinates2d(
                 Coordinates2d.OPENGL_NORMALIZED_DEVICE_COORDINATES,
                 quadCoords,
@@ -129,16 +157,17 @@ class ArBackgroundRenderer {
             quadTexCoordsBuffer.position(0)
             quadTexCoordsBuffer.put(quadTexCoords)
             quadTexCoordsBuffer.position(0)
+            texCoordsReady = true
         }
 
         GLES20.glDisable(GLES20.GL_DEPTH_TEST)
         GLES20.glDepthMask(false)
+        GLES20.glDisable(GLES20.GL_BLEND)
 
+        GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
         GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, textureId)
-
         GLES20.glUseProgram(program)
         GLES20.glUniform1i(textureUniform, 0)
-        GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
 
         quadCoordsBuffer.position(0)
         GLES20.glVertexAttribPointer(positionAttrib, 2, GLES20.GL_FLOAT, false, 0, quadCoordsBuffer)
@@ -152,12 +181,26 @@ class ArBackgroundRenderer {
 
         GLES20.glDisableVertexAttribArray(positionAttrib)
         GLES20.glDisableVertexAttribArray(texCoordAttrib)
+
+        GLES20.glDepthMask(true)
+        GLES20.glEnable(GLES20.GL_DEPTH_TEST)
     }
 
     private fun compileShader(type: Int, code: String): Int {
         val shader = GLES20.glCreateShader(type)
         GLES20.glShaderSource(shader, code)
         GLES20.glCompileShader(shader)
+        val compiled = IntArray(1)
+        GLES20.glGetShaderiv(shader, GLES20.GL_COMPILE_STATUS, compiled, 0)
+        if (compiled[0] == 0) {
+            Log.e(TAG, "Could not compile shader $type: ${GLES20.glGetShaderInfoLog(shader)}")
+            GLES20.glDeleteShader(shader)
+            return 0
+        }
         return shader
+    }
+
+    companion object {
+        private const val TAG = "ArBackgroundRenderer"
     }
 }

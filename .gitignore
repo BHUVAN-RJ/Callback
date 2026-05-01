@@ -13,6 +13,7 @@ app/src/main/assets/*.tflite
 .DS_Store
 /build
 /captures
+/logs/
 .externalNativeBuild
 .cxx
 local.properties
