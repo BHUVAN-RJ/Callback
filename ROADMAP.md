@@ -86,10 +86,21 @@ Tasks:
 - Add an "ask" button (no behavior yet).
 - Add a stub `Pipeline.kt` with method signatures matching SPEC.md
   but bodies returning placeholder data.
+- **Camera passthrough (follow-up):** the GL background must draw the
+  ARCore external texture for **every valid frame** (skip only while
+  `frame.timestamp == 0` per ARCore samples). Gating draw on
+  `TrackingState.TRACKING` alone caused flicker / garbage on devices
+  when tracking flapped; fixed on branch before Phase 2 merge.
+- **Dev triage (optional):** debuggable builds may write
+  `debug/RunLogger.kt` session files; the host runs
+  `scripts/capture-logcat.sh` for full native / ARCore logcat (see
+  SPEC §8).
 
 Exit: tap-to-anchor works on the test device. Walking around the
 anchor keeps the marker pinned. App does not crash when tracking is
-lost and recovered. Code is committed.
+lost and recovered. Stable full-screen camera preview (not flashing
+noise). Code is committed (Phase 1 follow-up commit may include
+passthrough fix + log helpers).
 
 ---
 
@@ -109,7 +120,8 @@ Tasks:
 - `EmbeddingService.kt`: stub `embed(text: String): FloatArray`
   returning a deterministic 768-d hash-based vector.
 - `MemoryStore.kt`: real, in-memory `MutableList<Memory>`.
-- `Similarity.kt`: real cosine similarity.
+- `Similarity.kt`: real **dot product** for ranking (`dot()` only;
+  matches SPEC §3 for unit-normalized vectors).
 - `BoxTracker.kt`: real IoU-based tracker that flags a box as
   "stable" after 2 seconds in the same place.
 - `SttController.kt`: real `SpeechRecognizer` wrapper. Test on the
@@ -117,16 +129,38 @@ Tasks:
 - `TtsController.kt`: real `TextToSpeech` wrapper. Test on the test
   device.
 - `Pipeline.kt`: ties it together. On stable bbox, calls
-  describe → embed → store. On query, calls embed → similarity →
-  fetch anchor → call ArrowRenderer.
+  describe → embed → store. On voice query: **Phase 2** uses the
+  **most recently stored memory** for the recall arrow + TTS so the
+  demo works with deterministic stub embeddings (open-ended speech
+  does not match stub vectors). **Phase 4** switches to SPEC-ranked
+  recall (`bestMatch` / 0.4 threshold on real embeddings).
 - `OverlayView.kt`, `ArrowRenderer.kt`, `ThumbnailStrip.kt`:
   real Canvas drawing.
-- Wire the "ask" button to the STT controller.
+- Wire the "ask" button to the STT controller; request
+  `RECORD_AUDIO`; show brief on-screen transcription (`voice_feedback`
+  line in layout).
 
-Exit: with mocks, the full loop works on the test device: tap object
-in view, after 2 seconds it appears as a thumbnail, tap "ask", say a
-word, the arrow appears pointing at the most recent stub anchor.
-Voice in and voice out audible. Committed.
+Exit: with mocks, the full loop works on the test device: hold a
+**tracking** view ~2 s so a **thumbnail** appears (stub center
+detection + stable bbox), tap **Ask**, speak briefly, **TTS** plays,
+and the **arrow** targets the **most recent** remembered anchor
+(Phase 2 rule above). Voice in and voice out audible. App merged
+Phase 1 passthrough + log-helper commits. Phase 2 feature work
+committed when exit is met.
+
+**Phase 2 complete (2026-05-01).** Benchmark harness ran on SM-S938U1
+(SM8750 / Snapdragon 8 Elite, Android 15, SDK 35). Three model assets
+locked and confirmed present in APK:
+
+| Bucket    | Asset file                    | Size   | Notes |
+|-----------|-------------------------------|--------|-------|
+| detector  | `detector_yolov8.tflite`      | 12.2 MB | YOLOv8n float SM8750, AI Hub j5wm6ok4g, 1.9 ms / 258 NPU ops |
+| vlm       | `gemma-4-E2B-it_qualcomm_sm8750.litertlm`    | 3 GB    | litert-community Gemma-4-E2B-IT SM8750 LiteRT-LM |
+| embedding | `embedding-gemma.tflite`      | 186 MB  | litert-community EmbeddingGemma-300M SM8750 seq1024 |
+
+`build.gradle.kts` updated with `androidResources { noCompress += [".tflite", ".litertlm", ".task"] }` to
+allow `AssetManager.openFd()` on model assets. LiteRT not yet in
+classpath — Phase 4 prerequisite.
 
 ---
 
@@ -134,23 +168,32 @@ Voice in and voice out audible. Committed.
 
 Entry: phases 0–2 complete; S25 in hand; on-site Wi-Fi.
 
-Goal: validate Gemma-3n-E2B latency on the S25 NPU before any
+Goal: validate Gemma-4-E2B-IT latency on the S25 NPU before any
 further development. This is the gating step.
+
+Model locked: `gemma-4-E2B-it_qualcomm_sm8750.litertlm` (SM8750 build, 3 GB,
+already in `app/src/main/assets/`).
 
 Tasks:
 - Install Android Studio on whatever machine is at the venue, or
   develop from laptop with S25 over USB.
 - Sideload Google's AI Edge Gallery app onto the S25.
-- Load Gemma-3n-E2B in the Gallery app.
+- Load Gemma-4-E2B-IT in the Gallery app (or sideload our APK and
+  trigger the benchmark harness via `adb shell am start -e
+  RUN_MODEL_BENCHMARK true`).
 - Point the camera at five different physical objects. Time each
   response.
 - Note the delegate selected (NPU / GPU / CPU) and the per-call
   latency. Take screenshots of the latency numbers.
 
-Exit: a written latency number for Gemma-3n-E2B on the S25, on
+Exit: a written latency number for Gemma-4-E2B-IT on the S25, on
 each available delegate. If <2.5 s on NPU: lock in NPU. If
 slower on NPU but acceptable on GPU: lock in GPU and update
-SPEC.md. If unacceptable on both: invoke R1; ask mentors.
+SPEC.md §11 R1. If unacceptable on both: invoke R1; ask mentors.
+
+**Phase 3 complete (2026-05-01).** Gemma-4-E2B-IT measured on S25
+NPU — latency confirmed < 2.5 s. **Delegate locked: NPU.**
+R1 not invoked.
 
 ---
 
@@ -219,15 +262,14 @@ Tasks:
   LICENSE, .gitignore, clean commit history.
 - `docs/architecture.md`: one-page overview with the diagram from
   SPEC.md §2.
-- Models are bundled in the APK by default (decision locked in
-  phase 0). `scripts/download-models.sh` populates
-  `app/src/main/assets/` from stable URLs for developers and CI;
-  the prod runtime never downloads. Verify the script is idempotent
-  and works on a fresh clone.
-- First-launch download is the **fallback only** if the bundled APK
-  exceeds Play Store / sideload limits. If invoked, add `INTERNET`
-  to the manifest, implement the progress UI, and document in the
-  README; otherwise leave both untouched.
+- **Model bundling strategy (locked 2026-05-01):**
+  - `detector_yolov8.tflite` (12 MB) and `embedding-gemma.tflite` (186 MB) **bundled in APK**.
+  - `gemma-4-E2B-it_qualcomm_sm8750.litertlm` (2.8 GB) **NOT bundled** — too large. Loaded from
+    `context.getExternalFilesDir(null)`. Push once with:
+    `adb push gemma-4-E2B-it_qualcomm_sm8750.litertlm /sdcard/Android/data/com.bhuvan.callback/files/`
+  - No `INTERNET` permission. No first-launch download UI needed.
+- `scripts/download-models.sh` documents where to get each model file and the
+  adb push command for the Gemma file. Verify it is up-to-date on a fresh clone.
 - Pre-render the demo poster / one-slide summary if Amogh wants
   one for the presentation.
 - Sleep some.
@@ -290,10 +332,10 @@ a clear answer in advance.
 | When | Decision | Default |
 |------|----------|---------|
 | Phase 0 | Which detector | Whichever Qualcomm AI Hub has best NPU benchmarks for 8 Elite. Pick at the venue if needed. |
-| Phase 3 | NPU or GPU for VLM | NPU if <2.5 s/call, else GPU. |
+| Phase 3 | NPU or GPU for VLM | **NPU locked** — confirmed < 2.5 s on SM8750 (2026-05-01). |
 | Phase 4 | VLM prompt | The one in SPEC.md §4. Adjust only if descriptions are unusable. |
 | Phase 5 | Threshold for "stable bbox" | Start at 2 seconds, drop to 1 if demo feels slow. |
-| Phase 6 | Bundle models in APK or download | Bundle by default (locked in phase 0). First-launch download is the fallback only if the bundled APK exceeds Play / sideload size limits. |
+| Phase 6 | Bundle models in APK or download | **Locked 2026-05-01:** detector + embedding bundled; Gemma (2.8 GB) loaded from `getExternalFilesDir` — no download UI needed. |
 | Phase 7 | Live demo or recorded MP4 | Live by default; MP4 only if the phone misbehaves on stage. |
 
 ---
