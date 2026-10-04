@@ -1,19 +1,85 @@
 <?xml version="1.0" encoding="utf-8"?>
-<androidx.constraintlayout.widget.ConstraintLayout xmlns:android="http://schemas.android.com/apk/res/android"
-    xmlns:app="http://schemas.android.com/apk/res-auto"
+<com.bhuvan.callback.ui.TouchRoutingFrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:tools="http://schemas.android.com/tools"
-    android:id="@+id/main"
+    android:id="@+id/touch_root"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
     tools:context=".MainActivity">
 
+    <android.opengl.GLSurfaceView
+        android:id="@+id/gl_surface_view"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent" />
+
+    <com.bhuvan.callback.ui.OverlayView
+        android:id="@+id/overlay_view"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent" />
+
     <TextView
+        android:id="@+id/tracking_label"
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
-        android:text="Hello World!"
-        app:layout_constraintBottom_toBottomOf="parent"
-        app:layout_constraintEnd_toEndOf="parent"
-        app:layout_constraintStart_toStartOf="parent"
-        app:layout_constraintTop_toTopOf="parent" />
+        android:layout_gravity="top|start"
+        android:layout_margin="@dimen/tracking_label_margin"
+        android:background="@color/tracking_label_background"
+        android:padding="@dimen/tracking_label_padding"
+        android:text="@string/tracking_state_not_tracking"
+        android:textColor="@color/white" />
 
-</androidx.constraintlayout.widget.ConstraintLayout>
+    <FrameLayout
+        android:id="@+id/model_loading_overlay"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:background="@color/model_loading_scrim"
+        android:clickable="true"
+        android:focusable="true"
+        android:visibility="visible">
+
+        <TextView
+            android:id="@+id/model_loading_text"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_gravity="center"
+            android:padding="@dimen/model_loading_padding"
+            android:text="@string/model_loading_message"
+            android:textColor="@color/white"
+            android:textSize="@dimen/model_loading_text_size" />
+    </FrameLayout>
+
+    <LinearLayout
+        android:id="@+id/bottom_chrome"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_gravity="bottom"
+        android:background="@color/bottom_chrome_background"
+        android:elevation="@dimen/bottom_chrome_elevation"
+        android:orientation="vertical"
+        android:padding="@dimen/bottom_chrome_padding">
+
+        <com.bhuvan.callback.ui.ThumbnailStrip
+            android:id="@+id/thumbnail_strip"
+            android:layout_width="match_parent"
+            android:layout_height="@dimen/thumb_strip_height"
+            android:contentDescription="@string/thumbnail_strip_content_description" />
+
+        <TextView
+            android:id="@+id/voice_feedback"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:padding="@dimen/voice_feedback_padding"
+            android:text="@string/voice_feedback_idle"
+            android:textColor="@color/voice_feedback_text"
+            android:textSize="@dimen/voice_feedback_text_size" />
+
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/button_ask"
+            style="@style/Widget.Material3.Button.OutlinedButton"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_gravity="center_horizontal"
+            android:layout_marginTop="@dimen/ask_button_margin_top"
+            android:text="@string/button_ask" />
+    </LinearLayout>
+
+</com.bhuvan.callback.ui.TouchRoutingFrameLayout>

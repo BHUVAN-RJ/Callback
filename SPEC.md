@@ -27,20 +27,23 @@ The app does three things:
    6DoF pose continuously. A small object detector runs on every
    frame and produces bounding boxes with class labels.
 
-2. **Remember.** When an object is detected and stable, or when the
-   user says "remember this", the cropped bounding box is sent to a
-   vision-language model that produces a one-phrase description.
-   The description is embedded by a text embedding model. The 3D
-   anchor at the bounding box center is created via ARCore hit-test.
-   The triple `(anchor, description, embedding)` is appended to an
-   in-memory store.
+2. **Remember.** When an object is detected and stable (stable-bbox
+   gate; no voice "remember this" trigger in v1), the cropped bounding
+   box is sent to a vision-language model that produces a one-phrase
+   description. The description is embedded by a text embedding model.
+   The 3D anchor at the bounding box center is created via ARCore
+   hit-test. The triple `(anchor, description, embedding)` is appended
+   to an in-memory store.
 
-3. **Recall.** When the user says "where is X", the query is
-   transcribed by Android's speech recognizer, embedded by the same
-   embedding model, and matched against the store via cosine
-   similarity. The top match's anchor is queried for its current
-   pose, projected into screen space, and rendered as a 2D arrow
-   overlay. Text-to-speech reads a short answer.
+3. **Recall.** When the user asks via voice, the query is transcribed
+   by Android's speech recognizer, embedded by the same embedding model,
+   and matched against the store (see §3 for the `dot` score on
+   unit-normalized vectors). The chosen match's anchor is queried for
+   its current pose, projected into screen space, and rendered as a 2D
+   arrow overlay. Text-to-speech reads a short answer. **Phase 2
+   (stubs):** recall targets the **most recent** `Memory` so the demo
+   works with deterministic stub embeddings; **Phase 4** implements
+   full §3 ranking and the 0.4 threshold.
 
 ---
 
@@ -71,7 +74,7 @@ needs to.
                           |
                           v
               +---------------------------+
-              | Stage 2: Gemma-3n-E2B VLM |  NPU (or GPU fallback)
+              | Stage 2: Gemma-4-E2B-IT VLM|  NPU (or GPU fallback)
               | LiteRT-LM                 |
               | Input: cropped bbox image |
               | Output: short description |
@@ -91,8 +94,9 @@ needs to.
                   +---------------+
 
 On query:
-  voice -> SpeechRecognizer -> EmbeddingGemma -> cosine search
+  voice -> SpeechRecognizer -> EmbeddingGemma -> dot search (§3)
        -> anchor -> screen-space arrow + TTS
+       (Phase 2 stubs: most-recent memory; Phase 4: ranked top-1)
 ```
 
 ARCore runs continuously on CPU/GPU at 30 Hz. The detector runs at
@@ -134,7 +138,9 @@ score(memory, queryEmbedding) = dot(memory.embedding, queryEmbedding)
 ```
 
 Top-1 wins. If top-1 score < threshold (0.4 starting value, tune
-empirically), respond "I don't remember anything like that."
+empirically), respond "I don't remember anything like that." (The
+threshold path applies once real embeddings are wired in **Phase 4**;
+see ROADMAP Phase 2 for stub-era recall behavior.)
 
 `Similarity.kt` exposes `dot(FloatArray, FloatArray): Float` only;
 there is no separate cosine path. If a future change adds non-
@@ -166,13 +172,14 @@ All three models are loaded at app startup. Loading happens on a
 background thread with a splash screen until ready.
 
 ### Stage 1: Object detector
-- **Source:** Qualcomm AI Hub, TFLite, INT8 quantized, NPU-targeted.
-  Pick whichever performs best on Snapdragon 8 Elite at the venue.
-  Candidates: YOLOv8-Detection-Quantized, MobileNetV3-SSD,
-  EfficientDet-Lite0-Quantized.
+- **Model:** YOLOv8n (Ultralytics), compiled by Qualcomm AI Hub for
+  Snapdragon 8 Elite (SM8750), float precision.
+- **Asset:** `app/src/main/assets/detector_yolov8.tflite` (12 MB).
+- **Labels:** `app/src/main/assets/yolov8_labels.txt` (COCO-80).
+- **AI Hub job:** j5wm6ok4g — 258/258 ops on NPU, 1.9 ms on S25.
 - **Runtime:** LiteRT (`com.google.ai.edge.litert:litert`) with the
   QNN delegate for Hexagon NPU.
-- **Input:** 320x320 or 640x640 RGB, depending on model.
+- **Input:** 640×640 RGB.
 - **Output:** N detections of `(bbox, class_id, score)`.
 - **Filter:** keep detections with score > 0.5 and class in a
   curated whitelist. The whitelist is a top-level `val` in
@@ -186,22 +193,19 @@ background thread with a splash screen until ready.
       "cell phone"
   )
   ```
-  Earlier drafts included `keys` and `wallet`; both are absent from
-  COCO-80 and have been dropped — the demo simply does not detect
-  them. The exact class strings depend on the chosen detector's
-  label file. If the file uses different labels (e.g. "mug" instead
-  of "cup"), update this set to match and add a comment listing
-  what was unavailable.
 
-### Stage 2: Gemma-3n-E2B (vision-language)
-- **Source:** litert-community on Hugging Face.
+### Stage 2: Gemma-4-E2B-IT (vision-language)
+- **Model:** Gemma-4-E2B-IT, Qualcomm SM8750 build.
+- **Source:** `litert-community/gemma-4-E2B-it-litert-lm` on HF.
+- **Asset:** **not bundled in APK** — 3 GB is too large to ship in an APK.
+  Load from `context.getExternalFilesDir(null)/gemma-4-E2B-it_qualcomm_sm8750.litertlm`.
+  Push once to device: `adb push gemma-4-E2B-it_qualcomm_sm8750.litertlm /sdcard/Android/data/com.bhuvan.callback/files/`
+  No extra Android permission needed on API 31+ (`getExternalFilesDir` is app-private external storage).
 - **Runtime:** LiteRT-LM Kotlin API.
-- **Acceleration:** NPU first; if compilation fails or perf is
-  unacceptable, GPU is the fallback. Document which is in use.
-- **Input:** cropped bbox image at the resolution required by the
-  Gemma-3n-E2B model card. The exact size is resolved in phase 3 / 4
-  by reading the cloned LiteRT-LM sample app or the model card; do
-  not hardcode 224x224 before then. Plus the prompt below.
+- **Acceleration:** NPU (SM8750-specific build); GPU is fallback per R1.
+- **Input:** cropped bbox image. Exact resolution confirmed in phase 3/4
+  by reading the model card; do not hardcode before then. Plus the
+  prompt below.
 - **Prompt template:**
   ```
   Describe this object in one short phrase suitable for later
@@ -216,9 +220,12 @@ background thread with a splash screen until ready.
 - **Calls:** ~1–3 per minute average during the demo. Each call is
   independent; no chat history, no multi-turn context.
 
-### Stage 3: EmbeddingGemma
-- **Source:** litert-community on Hugging Face.
-- **Runtime:** LiteRT-LM Kotlin API.
+### Stage 3: EmbeddingGemma-300M
+- **Model:** EmbeddingGemma-300M, seq1024, Qualcomm SM8750 build.
+- **Source:** `litert-community/EmbeddingGemma-300M` on HF.
+- **Asset:** `app/src/main/assets/embedding-gemma.tflite` (186 MB).
+- **Runtime:** LiteRT (`com.google.ai.edge.litert:litert`) with QNN
+  delegate. Note: this model ships as `.tflite`, not `.litertlm`.
 - **Acceleration:** NPU.
 - **Input:** a single string (description on write, query on read).
 - **Output:** a 768-d float vector. Normalize to unit length.
@@ -228,6 +235,16 @@ background thread with a splash screen until ready.
 ## 5. ARCore integration
 
 - Min ARCore SDK: latest stable.
+- **GL camera preview:** `ArGlRenderer` runs `Session.update()` on the
+  GL thread, sets `Session.setCameraTextureName` each frame, clears
+  color/depth, and draws a full-screen quad via `ArBackgroundRenderer`
+  using `Frame.transformCoordinates2d` for UVs when display geometry
+  changes (and once UVs are first needed). Follow ARCore samples: draw
+  the external-OES camera texture for **every valid frame** and skip
+  draw only while `frame.timestamp == 0` (before the first camera image
+  is ready). **Do not** draw the background **only** when
+  `TrackingState.TRACKING`; that causes visible flicker when tracking
+  flaps.
 - Camera resolution: ARCore default; do not request high-res, it
   hurts tracking.
 - Frame access: pull `Frame.acquireCameraImage()` and copy pixels
@@ -264,6 +281,9 @@ The voice loop is:
 - Tap to start STT, release on result.
 - The recognized text is shown briefly on screen and embedded.
 - The response is spoken via TTS and shown on screen.
+
+Phase 2 layout includes a dedicated `voice_feedback` line for the
+heard phrase and error hints (strings in `strings.xml`).
 
 A wake word is out of scope.
 
@@ -309,15 +329,21 @@ callback/
 │   └── src/main/
 │       ├── AndroidManifest.xml
 │       ├── assets/
-│       │   ├── detector.tflite
-│       │   ├── gemma-3n-e2b.task    # or whatever LiteRT-LM expects
-│       │   └── embedding-gemma.task
+│       │   ├── detector_yolov8.tflite        # YOLOv8n SM8750, 12 MB  (bundled)
+│       │   ├── yolov8_labels.txt             # COCO-80 class names
+│       │   └── embedding-gemma.tflite        # EmbeddingGemma-300M SM8750, 186 MB  (bundled)
+│       │   # gemma-4-E2B-it_qualcomm_sm8750.litertlm NOT bundled — load from getExternalFilesDir(null)
 │       ├── java/com/bhuvan/callback/
 │       │   ├── MainActivity.kt
 │       │   ├── ar/
 │       │   │   ├── ArSessionWrapper.kt   # wraps com.google.ar.core.Session
+│       │   │   ├── ArGlRenderer.kt       # GLSurfaceView.Renderer + frame loop
+│       │   │   ├── ArBackgroundRenderer.kt  # camera external-OES quad
+│       │   │   ├── WorldToScreen.kt      # anchor → screen pixels
 │       │   │   ├── AnchorManager.kt
 │       │   │   └── HitTester.kt
+│       │   ├── debug/
+│       │   │   └── RunLogger.kt          # optional file log (debuggable APK)
 │       │   ├── ml/
 │       │   │   ├── Detector.kt
 │       │   │   ├── VLMService.kt
@@ -334,11 +360,14 @@ callback/
 │       │   │   ├── SttController.kt
 │       │   │   └── TtsController.kt
 │       │   └── ui/
+│       │           ├── TouchRoutingFrameLayout.kt  # routes taps to GL vs chrome
 │       │           ├── OverlayView.kt
+│       │           ├── ArrowDrawState.kt
 │       │           ├── ArrowRenderer.kt
 │       │           └── ThumbnailStrip.kt
 └── scripts/
-    └── download-models.sh           # if APK ships without models
+    ├── download-models.sh           # if APK ships without models
+    └── capture-logcat.sh            # host: adb logcat capture (ARCore / native triage)
 ```
 
 ---
@@ -359,17 +388,19 @@ callback/
   in `app/build.gradle.kts`'s `defaultConfig.ndk` block from phase 0
   onward. The S25 Ultra and the early-phase test devices are all
   arm64; shipping more ABIs only inflates the APK.
-- **Permissions:** `CAMERA`, `RECORD_AUDIO`. Models are bundled in
-  the APK (see ROADMAP phase 6); `INTERNET` is **not** declared. If
-  phase 6 falls back to first-launch download, add `INTERNET` then
-  and document the change.
+- **Permissions:** `CAMERA`, `RECORD_AUDIO`. `INTERNET` is **not** declared.
+  `detector_yolov8.tflite` and `embedding-gemma.tflite` are bundled in the APK.
+  `gemma-4-E2B-it_qualcomm_sm8750.litertlm` (2.8 GB) is **not bundled** — it is read from
+  `getExternalFilesDir(null)` (app-private external storage, no extra permission on API 31+).
+  Push to device once: `adb push gemma-4-E2B-it_qualcomm_sm8750.litertlm /sdcard/Android/data/com.bhuvan.callback/files/`
 - **Dependencies (stable versions to be confirmed at build time):**
   ```
   com.google.ar:core
-  com.google.ai.edge.litert:litert            # classical
-  com.google.ai.edge.litert:litert-gpu        # GPU delegate
-  com.google.ai.edge.litert.qnn:litert-qnn    # Qualcomm NPU delegate
-  com.google.ai.edge.litertlm:litertlm-android# LLM/VLM runtime
+  com.google.ai.edge.litert:litert:2.1.4              # classical (Detector + EmbeddingService)
+  com.google.ai.edge.litert:litert-gpu:1.4.2          # GPU delegate
+  com.qualcomm.qti:qnn-litert-delegate:2.44.0         # Qualcomm NPU delegate (NOT com.google.ai.edge.litert.qnn)
+  com.google.ai.edge.litertlm:litertlm-android:0.10.2 # LiteRT-LM (VLMService / Gemma-4-E2B-IT)
+  org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3
   androidx.camera:camera-camera2
   androidx.camera:camera-lifecycle
   ```
@@ -384,7 +415,7 @@ callback/
 |-----------------|---------------|----------------------|
 | ARCore frame    | <33 ms        | 30 Hz, parallel      |
 | Detector        | <30 ms        | 10 Hz                |
-| VLM (Gemma-3n)  | <2.5 s        | 1–3 calls / minute   |
+| VLM (Gemma-4-E2B-IT) | <2.5 s   | 1–3 calls / minute   |
 | Embedding write | <100 ms       | 1 per remember       |
 | Embedding read  | <100 ms       | 1 per query          |
 | Cosine search   | <5 ms         | 1 per query, <100 entries |
@@ -400,7 +431,7 @@ on NPU for the criterion to be defensible.
 
 | ID | Risk | Mitigation | Decision point |
 |----|------|------------|----------------|
-| R1 | Gemma-3n-E2B too slow on NPU | Run on GPU instead | End of phase 3 on device |
+| R1 | Gemma-4-E2B-IT too slow on NPU | Run on GPU instead | End of phase 3 on device |
 | R2 | ARCore + LiteRT camera contention | ARCore owns session, copy frames on background thread | Phase 2 first run |
 | R3 | Hit-test fails on featureless surface | Depth-API fallback for anchor placement | Phase 4, only if observed |
 | R4 | APK > 2 GB due to bundled models | Download on first launch with progress UI | Phase 6 |
